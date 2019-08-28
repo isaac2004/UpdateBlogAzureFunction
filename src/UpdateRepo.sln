@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.29117.161
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UpdateRepo", "UpdateRepo\UpdateRepo.csproj", "{A74DA3DD-D1A9-40DB-BCFE-1F7A20E8067E}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "UpdateRepo", "UpdateRepo\UpdateRepo.csproj", "{A74DA3DD-D1A9-40DB-BCFE-1F7A20E8067E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

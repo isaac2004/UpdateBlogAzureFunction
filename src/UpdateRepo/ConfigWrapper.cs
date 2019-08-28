@@ -1,9 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Configuration;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace UpdateRepo
 {
@@ -68,14 +63,6 @@ namespace UpdateRepo
         public string PAT
         {
             get { return Environment.GetEnvironmentVariable("PAT"); }
-        }
-        public string GitHubUserName
-        {
-            get { return Environment.GetEnvironmentVariable("GitHubUserName"); }
-        }
-        public string GitHubAccountName
-        {
-            get { return Environment.GetEnvironmentVariable("GitHubAccountName"); }
         }
     }
 }

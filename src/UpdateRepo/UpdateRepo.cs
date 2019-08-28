@@ -1,140 +1,186 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using AutoMapper;
-using LibGit2Sharp;
-using LibGit2Sharp.Handlers;
+using System.Threading;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Search;
-using Microsoft.Alm.Authentication;
 using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Logging;
-using MimeKit;
 using Newtonsoft.Json;
+
 
 namespace UpdateRepo
 {
     public class UpdateRepo
     {
-
         private readonly ConfigWrapper config;
         private readonly ILogger log;
+        private string tempFolder;
 
         public UpdateRepo(ILoggerFactory fact, ConfigWrapper _config)
         {
             log = fact.CreateLogger("UpdateRepo");
             config = _config;
+            tempFolder = $"{config.RepoPath}/temp";
         }
-        private CredentialsHandler Credentials
-        {
-            get
-            {
-                return (_url, _user, _cred) =>
-                {
-                    return new UsernamePasswordCredentials { Username = config.GitHubUserName, Password = config.PAT };
-                };
-            }
-            set { }
-        }
+
         [FunctionName("UpdateRepo")]
         public void Run([TimerTrigger("0 */5 * * * *")]TimerInfo myTimer, ILogger log)
         {
-            Event evnt = new Event();
+            List<Event> newEvents = ParseEmail();
+
+            if (newEvents != null && newEvents.Count > 0)
+            {
+                if (!Directory.Exists(tempFolder))
+                {
+                    Directory.CreateDirectory(tempFolder);
+                }
+
+                Directory.SetCurrentDirectory(tempFolder);
+
+                log.LogInformation("Clone Done");
+                try
+                {
+                    RunCmd("clone.cmd");
+
+                    string json = File.ReadAllText($"{tempFolder}/{config.DataPath}");
+                    var events = JsonConvert.DeserializeObject<List<Event>>(json);
+                    events.AddRange(newEvents);
+                    File.WriteAllText($"{tempFolder}/{config.DataPath}", JsonConvert.SerializeObject(events, Formatting.Indented));
+
+                    RunCmd("commit.cmd");
+                }
+                catch
+                {
+
+                }
+                finally
+                {
+                    EmptyFolder(tempFolder);
+                }
+            }
+        }
+
+        private List<Event> ParseEmail()
+        {
+            List<Event> events = new List<Event>();
             using (var client = new ImapClient())
             {
+                // For demo-purposes, accept all SSL certificates
                 client.ServerCertificateValidationCallback = (s, c, h, e) => true;
-
                 client.Connect(config.IMAPServer, Convert.ToInt32(config.IMAPPort), Convert.ToBoolean(config.IMAPUseSSL));
-
                 client.Authenticate(config.IMAPUsername, config.IMAPPassword);
 
                 var inbox = client.Inbox;
                 inbox.Open(FolderAccess.ReadWrite);
-
-                for (int i = 0; i < inbox.Count; i++)
+                var query = SearchQuery.SubjectContains("Update Speaking Engagement");
+                foreach (var uid in inbox.Search(query))
                 {
-                    var message = inbox.GetMessage(i);
-                    if (message.Subject == "Update Speaking Engagement")
-                    {
-                        evnt = ParseMessage(message);
-                        var uids = inbox.Search(SearchQuery.HeaderContains("Message-Id", message.MessageId));
-                        inbox.AddFlags(uids, MessageFlags.Deleted, silent: true);
-                        client.Inbox.Expunge();
-                        break;
-                    }
+                    var message = inbox.GetMessage(uid);
+                    events.Add(ParseMessage(message.GetTextBody(MimeKit.Text.TextFormat.Plain)));
+                    log.LogInformation("Subject: {0}", message.Subject);
+                    inbox.AddFlags(uid, MessageFlags.Deleted, true);
                 }
-
+                client.Inbox.Expunge();
                 client.Disconnect(true);
             }
-            if (!string.IsNullOrEmpty(evnt.EventName))
-            {
-                DownloadGitRepo();
-                CommitRepo(evnt);
-                PushRepo();
-            }
+            return events;
         }
 
-        private Event ParseMessage(MimeMessage message)
+        private void RunCmd(string cmdName)
         {
-            Dictionary<string, string> keyValuePairs = message.TextBody.Split("\r\n")
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = $"{config.RepoPath}/{cmdName}",
+                Arguments = "",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                WorkingDirectory = tempFolder
+            };
+            var process = Process.Start(processStartInfo);
+            var output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            Thread.Sleep(10000);
+        }
+
+        private bool EmptyFolder(string pathName)
+        {
+            bool errors = false;
+            DirectoryInfo dir = new DirectoryInfo(pathName);
+
+            foreach (FileInfo fi in dir.EnumerateFiles())
+            {
+                try
+                {
+                    fi.IsReadOnly = false;
+                    fi.Delete();
+
+                    //Wait for the item to disapear (avoid 'dir not empty' error).
+                    while (fi.Exists)
+                    {
+                        System.Threading.Thread.Sleep(10);
+                        fi.Refresh();
+                    }
+                }
+                catch (IOException e)
+                {
+                    Debug.WriteLine(e.Message);
+                    errors = true;
+                }
+            }
+
+            foreach (DirectoryInfo di in dir.EnumerateDirectories())
+            {
+                try
+                {
+                    EmptyFolder(di.FullName);
+                    di.Delete();
+
+                    //Wait for the item to disapear (avoid 'dir not empty' error).
+                    while (di.Exists)
+                    {
+                        System.Threading.Thread.Sleep(10);
+                        di.Refresh();
+                    }
+                }
+                catch (IOException e)
+                {
+                    Debug.WriteLine(e.Message);
+                    errors = true;
+                }
+            }
+
+            try
+            {
+                dir.Delete();
+
+                //Wait for the item to disapear (avoid 'dir not empty' error).
+                while (dir.Exists)
+                {
+                    System.Threading.Thread.Sleep(10);
+                    dir.Refresh();
+                }
+            }
+            catch (IOException e)
+            {
+                Debug.WriteLine(e.Message);
+                errors = true;
+            }
+
+            return !errors;
+        }
+
+        private Event ParseMessage(string message)
+        {
+            Dictionary<string, string> keyValuePairs = message.Split("\r\n")
               .Where(a => a != "")
               .Select(value => value.Split('|'))
               .ToDictionary(pair => pair[0].Trim(), pair => pair[1].Trim());
 
             return JsonConvert.DeserializeObject<Event>(JsonConvert.SerializeObject(keyValuePairs));
-        }
-
-        private void DownloadGitRepo()
-        {
-            var secrets = new SecretStore("git");
-            var auth = new BasicAuthentication(secrets);
-            var creds = auth.GetCredentials(new TargetUri(config.RepoUrl));
-
-            var options = new CloneOptions
-            {
-                CredentialsProvider = Credentials
-            };
-
-            if (Directory.Exists(config.RepoPath))
-            {
-                Directory.Delete(config.RepoPath, true);
-            }
-
-            Repository.Clone(config.RepoUrl, config.RepoPath, options);
-        }
-
-
-        private void CommitRepo(Event evnt)
-        {
-            using (var repo = new Repository(config.RepoPath))
-            {
-                var file = File.ReadAllText(config.RepoPath + config.DataPath);
-                List<Event> data = JsonConvert.DeserializeObject<List<Event>>(file);
-
-                data.Add(evnt);
-
-                File.WriteAllText(config.RepoPath + config.DataPath, JsonConvert.SerializeObject(data, Formatting.Indented));
-
-                Commands.Stage(repo, "*");
-
-                Signature author = new Signature(config.GitHubUserName, config.GitHubAccountName, DateTime.Now);
-                Signature committer = author;
-
-                Commit commit = repo.Commit("Update Speaking Events from Email", author, committer);
-            }
-        }
-
-        private void PushRepo()
-        {
-            using (var repo = new Repository(config.RepoPath))
-            {
-                LibGit2Sharp.PushOptions pushOptions = new LibGit2Sharp.PushOptions();
-                pushOptions.CredentialsProvider = Credentials;
-                repo.Network.Push(repo.Branches["master"], pushOptions);
-            }
         }
     }
 }
